@@ -34,6 +34,29 @@ func (c *Config) SetUser(userName string) error {
 	return nil
 }
 
+func (c *Config) SetDbURL(url string) error {
+	c.DbURL = url
+	// Get the home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	// Construct the full path to the config file
+	configPath := filepath.Join(homeDir, ".gatorconfig.json")
+	// Convert to JSON
+	jsonData, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	// Write to file
+	err = os.WriteFile(configPath, jsonData, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+
+}
+
 func Read() (Config, error) {
 	var cfg Config
 	// Get the home directory
