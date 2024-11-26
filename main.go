@@ -166,7 +166,7 @@ func handlerAgg(s *state, cmd command) error {
 // url: url of feed }
 func handlerAddFeed(s *state, cmd command) error {
 	if len(cmd.args) < 2 {
-		return fmt.Errorf("must provide args and url")
+		return fmt.Errorf("must provide feed name and url")
 	}
 	var feedName string = cmd.args[0]
 	var feedUrl string = cmd.args[1]
@@ -182,7 +182,7 @@ func handlerAddFeed(s *state, cmd command) error {
 	if err != nil {
 		return err
 	}
-	///
+
 	feedParams := database.CreateFeedParams{
 		ID:        uuid.New(),
 		CreatedAt: time.Now(),
@@ -193,7 +193,18 @@ func handlerAddFeed(s *state, cmd command) error {
 	}
 	// add new feed row
 	feed, err := s.db.CreateFeed(context.Background(), feedParams)
-
+	if err != nil {
+		return err
+	}
+	//add feed_follows
+	feedFollowParams := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		FeedID:    uuid.NullUUID{UUID: feed.ID, Valid: true},
+	}
+	_, err = s.db.CreateFeedFollow(context.Background(), feedFollowParams)
 	if err != nil {
 		return err
 	}
@@ -217,6 +228,61 @@ func handlerFeeds(s *state, cmd command) error {
 		}
 
 		fmt.Printf("{ name: %s url: %s user: %s }\n", feed.Name.String, feed.Url.String, feedUser.Name)
+	}
+
+	return nil
+}
+
+// Takes a single URL arguement. Create a feed_follows entry for the current user. Prints the user name and feed name
+func handlerFollow(s *state, cmd command) error {
+	if len(cmd.args) < 1 {
+		return fmt.Errorf("no URL given")
+	}
+	feedURL := cmd.args[0]
+	_, err := url.Parse(feedURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL provided: %v", err)
+	}
+
+	//Create the feed_follows entry
+	feed, err := s.db.GetFeedByURL(context.Background(), sql.NullString{String: feedURL, Valid: true})
+	if err != nil {
+		return err
+	}
+	user, err := s.db.GetUser(context.Background(), s.config.CurrentUserName)
+	if err != nil {
+		return err
+	}
+	params := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		FeedID:    uuid.NullUUID{UUID: feed.ID, Valid: true},
+	}
+	feedFollow, err := s.db.CreateFeedFollow(context.Background(), params)
+
+	if err != nil {
+		return err
+	}
+	//print the user name and feed name
+	fmt.Println(feedFollow.UserName, feedFollow.FeedName)
+	return nil
+}
+
+func handlerFollowing(s *state, cmd command) error {
+	user, err := s.db.GetUser(context.Background(), s.config.CurrentUserName)
+	if err != nil {
+		return err
+	}
+
+	feedFollows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
+	if err != nil {
+		return err
+	}
+
+	for _, feedFollow := range feedFollows {
+		fmt.Println(feedFollow.FeedsName.String)
 	}
 
 	return nil
@@ -282,6 +348,8 @@ func main() {
 	commands.registerHandler("agg", handlerAgg)
 	commands.registerHandler("addfeed", handlerAddFeed)
 	commands.registerHandler("feeds", handlerFeeds)
+	commands.registerHandler("follow", handlerFollow)
+	commands.registerHandler("following", handlerFollowing)
 	if len(os.Args) < 2 {
 		log.Fatalf("no command given")
 	}
