@@ -164,7 +164,7 @@ func handlerAgg(s *state, cmd command) error {
 // args{
 // name: name of feed
 // url: url of feed }
-func handlerAddFeed(s *state, cmd command) error {
+func handlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.args) < 2 {
 		return fmt.Errorf("must provide feed name and url")
 	}
@@ -176,13 +176,7 @@ func handlerAddFeed(s *state, cmd command) error {
 		return fmt.Errorf("invalid URL provided: %v", err)
 	}
 
-	// find the user
-	currentUserName := s.config.CurrentUserName
-	user, err := s.db.GetUser(context.Background(), currentUserName)
-	if err != nil {
-		return err
-	}
-
+	// add new feed row
 	feedParams := database.CreateFeedParams{
 		ID:        uuid.New(),
 		CreatedAt: time.Now(),
@@ -191,7 +185,6 @@ func handlerAddFeed(s *state, cmd command) error {
 		Url:       sql.NullString{String: feedUrl, Valid: true},
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
 	}
-	// add new feed row
 	feed, err := s.db.CreateFeed(context.Background(), feedParams)
 	if err != nil {
 		return err
@@ -234,7 +227,7 @@ func handlerFeeds(s *state, cmd command) error {
 }
 
 // Takes a single URL arguement. Create a feed_follows entry for the current user. Prints the user name and feed name
-func handlerFollow(s *state, cmd command) error {
+func handlerFollow(s *state, cmd command, user database.User) error {
 	if len(cmd.args) < 1 {
 		return fmt.Errorf("no URL given")
 	}
@@ -246,10 +239,6 @@ func handlerFollow(s *state, cmd command) error {
 
 	//Create the feed_follows entry
 	feed, err := s.db.GetFeedByURL(context.Background(), sql.NullString{String: feedURL, Valid: true})
-	if err != nil {
-		return err
-	}
-	user, err := s.db.GetUser(context.Background(), s.config.CurrentUserName)
 	if err != nil {
 		return err
 	}
@@ -270,11 +259,8 @@ func handlerFollow(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollowing(s *state, cmd command) error {
-	user, err := s.db.GetUser(context.Background(), s.config.CurrentUserName)
-	if err != nil {
-		return err
-	}
+// Prints the list of feeds the currently logged in user is following
+func handlerFollowing(s *state, cmd command, user database.User) error {
 
 	feedFollows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
 	if err != nil {
@@ -286,6 +272,42 @@ func handlerFollowing(s *state, cmd command) error {
 	}
 
 	return nil
+}
+
+// unfollow a feed given the feed URL and the currently logged in user
+func handlerUnfollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) < 1 {
+		return fmt.Errorf("no feed URL given")
+	}
+	feedURL := cmd.args[0]
+	_, err := url.Parse(feedURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL provided: %v", err)
+	}
+
+	deleteParams := database.DeleteFeedFollowsByUserParams{
+		UserID:  uuid.NullUUID{UUID: user.ID, Valid: true},
+		FeedUrl: sql.NullString{String: feedURL, Valid: true},
+	}
+
+	err = s.db.DeleteFeedFollowsByUser(context.Background(), deleteParams)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// middleware function to trim user parameter off the function signature
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		user, err := s.db.GetUser(context.Background(), s.config.CurrentUserName)
+		if err != nil {
+			return err
+		}
+
+		return handler(s, cmd, user)
+	}
 }
 
 // fetch a feed from the given URL, return an RSSFeed struct
@@ -346,10 +368,11 @@ func main() {
 	commands.registerHandler("reset", handlerReset)
 	commands.registerHandler("users", handlerUsers)
 	commands.registerHandler("agg", handlerAgg)
-	commands.registerHandler("addfeed", handlerAddFeed)
+	commands.registerHandler("addfeed", middlewareLoggedIn(handlerAddFeed))
 	commands.registerHandler("feeds", handlerFeeds)
-	commands.registerHandler("follow", handlerFollow)
-	commands.registerHandler("following", handlerFollowing)
+	commands.registerHandler("follow", middlewareLoggedIn(handlerFollow))
+	commands.registerHandler("following", middlewareLoggedIn(handlerFollowing))
+	commands.registerHandler("unfollow", middlewareLoggedIn(handlerUnfollow))
 	if len(os.Args) < 2 {
 		log.Fatalf("no command given")
 	}
