@@ -150,14 +150,20 @@ func handlerUsers(s *state, cmd command) error {
 	return nil
 }
 
-// prints a blog feed https://www.wagslane.dev/index.xml
+// prints blog feed title for every given time between requests
 func handlerAgg(s *state, cmd command) error {
-	rssFeed, err := fetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
-	if err != nil {
-		return err
+	if len(cmd.args) < 1 {
+		return fmt.Errorf("No time between requests given")
 	}
-	fmt.Printf("%+v\n", rssFeed)
-	return nil
+	var time_between_reqs time.Duration
+	time_between_reqs, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("Invalid time.Duration value: %v\n%v", cmd.args[0], err)
+	}
+	ticker := time.NewTicker(time_between_reqs)
+	for ; ; <-ticker.C {
+		scrapeFeeds(context.Background(), *s)
+	}
 }
 
 // Get current user from the database, and make a new feed row
@@ -340,6 +346,30 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 
 	}
 	return rssFeed, nil
+}
+
+func scrapeFeeds(ctx context.Context, s state) error {
+	nextFeed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return err
+	}
+	markFeedParams := database.MarkFeedFetchedParams{
+		Time: sql.NullTime{Time: time.Now(), Valid: true},
+		ID:   nextFeed.ID,
+	}
+	err = s.db.MarkFeedFetched(context.Background(), markFeedParams)
+	if err != nil {
+		return err
+	}
+	RSSfeed, err := fetchFeed(context.Background(), nextFeed.Url.String)
+	if err != nil {
+		return err
+	}
+	for _, item := range RSSfeed.Channel.Item {
+		fmt.Printf("%s\n", item.Title)
+	}
+
+	return nil
 }
 
 func main() {
