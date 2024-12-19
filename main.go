@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
@@ -162,7 +164,10 @@ func handlerAgg(s *state, cmd command) error {
 	}
 	ticker := time.NewTicker(time_between_reqs)
 	for ; ; <-ticker.C {
-		scrapeFeeds(context.Background(), *s)
+		err := scrapeFeeds(context.Background(), *s)
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -304,6 +309,33 @@ func handlerUnfollow(s *state, cmd command, user database.User) error {
 	return nil
 }
 
+// browse command to view all the posts from the feeds the user follows
+// takes an optional limit parameter
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	//get the limit
+	var limit int = 2
+	if len(cmd.args) > 0 {
+		var err error
+		limit, err = strconv.Atoi(cmd.args[0])
+		if err != nil {
+			return fmt.Errorf("limit was not a valid integer: %s", err)
+		}
+	}
+	//get all posts from the user's follow feeds
+	postsForUserParam := database.GetPostsForUserParams{
+		UserID: uuid.NullUUID{UUID: user.ID, Valid: true},
+		Limit:  int32(limit),
+	}
+	posts, err := s.db.GetPostsForUser(context.Background(), postsForUserParam)
+	if err != nil {
+		return err
+	}
+	//print to the command line
+	fmt.Printf("%+v\n", posts)
+
+	return nil
+}
+
 // middleware function to trim user parameter off the function signature
 func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
 	return func(s *state, cmd command) error {
@@ -348,6 +380,8 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	return rssFeed, nil
 }
 
+// handlerAgg helper function
+// scrape feeds and save posts to the database
 func scrapeFeeds(ctx context.Context, s state) error {
 	nextFeed, err := s.db.GetNextFeedToFetch(context.Background())
 	if err != nil {
@@ -365,8 +399,36 @@ func scrapeFeeds(ctx context.Context, s state) error {
 	if err != nil {
 		return err
 	}
+
 	for _, item := range RSSfeed.Channel.Item {
-		fmt.Printf("%s\n", item.Title)
+		createPostsParams := database.CreatePostsParams{}
+		createPostsParams.ID = uuid.New()
+		createPostsParams.CreatedAt = time.Now()
+		createPostsParams.UpdatedAt = time.Now()
+		if item.Title != "" {
+			createPostsParams.Title = sql.NullString{String: item.Title, Valid: true}
+		} else {
+			createPostsParams.Title = sql.NullString{Valid: false}
+		}
+
+		createPostsParams.Url = sql.NullString{String: item.Link, Valid: true}
+		createPostsParams.Description = sql.NullString{String: item.Description, Valid: true}
+		pubDate, err := time.Parse(time.RFC1123, item.PubDate)
+		if err != nil {
+			return err
+		}
+		createPostsParams.PublishedAt = sql.NullTime{Time: pubDate, Valid: true}
+		createPostsParams.FeedID = uuid.NullUUID{UUID: nextFeed.ID, Valid: true}
+		post, err := s.db.CreatePosts(context.Background(), createPostsParams)
+		if err != nil {
+			// ignore unique violation
+			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code.Name() == "unique_violation" {
+				fmt.Println("Duplicate URL, ignoring:", item.Link)
+			} else {
+				return fmt.Errorf("error creating post: %v", err)
+			}
+		}
+		fmt.Printf("%v\n", post)
 	}
 
 	return nil
@@ -403,6 +465,7 @@ func main() {
 	commands.registerHandler("follow", middlewareLoggedIn(handlerFollow))
 	commands.registerHandler("following", middlewareLoggedIn(handlerFollowing))
 	commands.registerHandler("unfollow", middlewareLoggedIn(handlerUnfollow))
+	commands.registerHandler("browse", middlewareLoggedIn(handlerBrowse))
 	if len(os.Args) < 2 {
 		log.Fatalf("no command given")
 	}
